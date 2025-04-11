@@ -2,7 +2,10 @@ module github.com/parth/DevTyper
 
 go 1.21
 
-require github.com/gdamore/tcell/v2 v2.6.0
+require (
+	github.com/creack/pty v1.1.18
+	github.com/gdamore/tcell/v2 v2.6.0
+)
 
 require (
 	github.com/gdamore/encoding v1.0.0 // indirect

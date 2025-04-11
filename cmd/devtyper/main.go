@@ -26,10 +26,42 @@ func main() {
 
 	// Join all args to detect command type
 	cmdString := strings.Join(args, " ")
-	_, description := monitor.DetectCommand(cmdString)
+	_, description, isInteractive := monitor.DetectCommand(cmdString)
+
+	// Setup signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	if isInteractive {
+		fmt.Println("This command requires user input. Please provide the required information:")
+		task := monitor.NewTask(args[0], args[1:]...)
+		if err := task.Start(); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Wait for command to complete without game
+		select {
+		case <-task.Done:
+			fmt.Println("\nCommand completed!")
+		case <-sigChan:
+			fmt.Println("\nForce quitting...")
+			task.Stop()
+		}
+		return
+	}
 
 	// Create task but don't start yet
 	task := monitor.NewTask(args[0], args[1:]...)
+
+	// Handle signals for clean shutdown
+	go func() {
+		<-sigChan
+		fmt.Print("\n") // New line after ^C
+		task.Stop()
+		fmt.Print("\033[?25h") // Show cursor
+		os.Exit(0)
+	}()
 
 	// Get user input before starting task
 	fmt.Println("Want to practice typing while waiting? [Y/n]")
@@ -37,15 +69,23 @@ func main() {
 	response, _ := reader.ReadString('\n')
 	response = strings.TrimSpace(response)
 
-	// Setup signal handling
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
 	// Start task after user input
 	if err := task.Start(); err != nil {
-		fmt.Printf("Error starting task: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
+		// Reset terminal state
+		fmt.Print("\033[?25h") // Show cursor
+		fmt.Print("\033[2J\033[H") // Clear screen
 		os.Exit(1)
 	}
+
+	// Setup error recovery
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Print("\033[?25h") // Show cursor
+			fmt.Print("\033[2J\033[H") // Clear screen
+			fmt.Printf("Error: %v\n", r)
+		}
+	}()
 
 	fmt.Printf("Starting long-running task: %s\n", description)
 
@@ -57,30 +97,21 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Handle Ctrl+C while game is running
-		go func() {
-			<-sigChan
-			g.Cleanup()
-			task.Stop()
-			os.Exit(0)
-		}()
-
 		g.ForceExit = *forceExit
 		g.Run()
 
-		// After game exits, check if we should wait for task
 		if *keepAlive {
-			fmt.Println("\nGame exited. Waiting for command to complete...")
-			fmt.Println("Press Ctrl+C to force quit")
+			fmt.Println("\nGame exited. Command is still running...")
 			select {
 			case <-task.Done:
-				fmt.Println("Command completed!")
+				fmt.Println("\nCommand completed!")
 			case <-sigChan:
-				fmt.Println("\nForce quitting...")
+				fmt.Println("\nStopping command...")
 				task.Stop()
 			}
 		} else {
 			task.Stop()
+			fmt.Println("\nCommand stopped.")
 		}
 	} else {
 		// Wait for task if not playing

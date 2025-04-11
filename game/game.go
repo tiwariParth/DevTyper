@@ -12,12 +12,11 @@ import (
 type GameState int
 
 const (
-	StateLanguageSelect GameState = iota
-	StateWordCountSelect
+	StateMode GameState = iota
 	StatePlaying
 	StateResults
 	StateTaskComplete
-	StateError // New state for error handling
+	StateError
 )
 
 type CharacterState struct {
@@ -55,7 +54,6 @@ func (s *Stats) calculateAccuracy() float64 {
 }
 
 type Results struct {
-	Language    string
 	Duration    int
 	WPM         float64
 	Accuracy    float64
@@ -71,8 +69,6 @@ type Game struct {
 	isRunning        bool
 	stats            *Stats
 	state            GameState
-	selectedLanguage int
-	languages        []string
 	wordCountOptions []int
 	selectedCount    int
 	currentChars     []CharacterState
@@ -81,6 +77,8 @@ type Game struct {
 	ForceExit        bool
 	taskDescription  string
 	task             *monitor.Task
+	modeOptions      []string
+	selectedMode     int
 }
 
 func New(taskDone chan bool, description string, task *monitor.Task) (*Game, error) {
@@ -100,9 +98,7 @@ func New(taskDone chan bool, description string, task *monitor.Task) (*Game, err
 		sentenceGen:      sentenceGen,
 		isRunning:        true,
 		stats:            NewStats(),
-		state:            StateLanguageSelect,
-		selectedLanguage: 0,
-		languages:        []string{"go", "javascript", "rust", "generic"},
+		state:            StateMode,
 		wordCountOptions: []int{10, 25, 50, 100},
 		selectedCount:    0,
 		currentChars:     make([]CharacterState, 0),
@@ -111,9 +107,9 @@ func New(taskDone chan bool, description string, task *monitor.Task) (*Game, err
 		ForceExit:        false,
 		taskDescription:  description,
 		task:             task,
+		modeOptions:      []string{"Practice Typing", "Wait for Task"},
+		selectedMode:     0,
 	}
-	game.updateCurrentChars()
-
 	return game, nil
 }
 
@@ -135,10 +131,8 @@ gameLoop:
 			g.showTaskComplete()
 		default:
 			switch g.state {
-			case StateLanguageSelect:
-				g.handleLanguageSelect()
-			case StateWordCountSelect:
-				g.handleWordCountSelect()
+			case StateMode:
+				g.handleModeSelect()
 			case StatePlaying:
 				g.handleInput()
 			case StateResults:
@@ -159,8 +153,8 @@ gameLoop:
 func (g *Game) showTaskComplete() {
 	g.screen.Beep()
 	g.state = StateTaskComplete
-	// Reset screen and redraw immediately
 	g.screen.Sync()
+	g.draw() // Force immediate draw
 }
 
 func (g *Game) showError(errMsg string) {
@@ -170,40 +164,23 @@ func (g *Game) showError(errMsg string) {
 	g.screen.Sync()
 }
 
-func (g *Game) handleLanguageSelect() {
+func (g *Game) handleModeSelect() {
 	ev := g.screen.PollEvent()
 	switch ev := ev.(type) {
 	case *tcell.EventKey:
 		switch ev.Key() {
 		case tcell.KeyEscape:
 			g.isRunning = false
-		case tcell.KeyUp:
-			g.selectedLanguage = (g.selectedLanguage - 1 + len(g.languages)) % len(g.languages)
-		case tcell.KeyDown:
-			g.selectedLanguage = (g.selectedLanguage + 1) % len(g.languages)
+		case tcell.KeyUp, tcell.KeyDown:
+			g.selectedMode = (g.selectedMode + 1) % len(g.modeOptions)
 		case tcell.KeyEnter:
-			g.state = StateWordCountSelect
-		}
-	}
-}
-
-func (g *Game) handleWordCountSelect() {
-	ev := g.screen.PollEvent()
-	switch ev := ev.(type) {
-	case *tcell.EventKey:
-		switch ev.Key() {
-		case tcell.KeyEscape:
-			g.state = StateLanguageSelect
-		case tcell.KeyUp:
-			g.selectedCount = (g.selectedCount - 1 + len(g.wordCountOptions)) % len(g.wordCountOptions)
-		case tcell.KeyDown:
-			g.selectedCount = (g.selectedCount + 1) % len(g.wordCountOptions)
-		case tcell.KeyEnter:
-			g.sentenceGen.SetWordCount(g.wordCountOptions[g.selectedCount])
-			g.sentenceGen.SetLanguage(g.languages[g.selectedLanguage])
-			g.currentSentence = g.sentenceGen.Generate()
-			g.updateCurrentChars()
-			g.state = StatePlaying
+			if g.selectedMode == 0 {
+				g.state = StatePlaying
+				g.currentSentence = g.sentenceGen.Generate()
+				g.updateCurrentChars()
+			} else {
+				g.isRunning = false // Just wait for task
+			}
 		}
 	}
 }
@@ -252,7 +229,6 @@ func (g *Game) checkWord() {
 
 func (g *Game) saveResults() {
 	g.results = &Results{
-		Language:    g.languages[g.selectedLanguage],
 		WPM:         g.stats.calculateWPM(),
 		Accuracy:    g.stats.calculateAccuracy(),
 		WordsTyped:  g.stats.wordsTyped,
@@ -277,6 +253,15 @@ func (g *Game) Cleanup() {
 	g.screen.Clear()
 	g.screen.Sync()
 	g.screen.Fini()
+	// Reset terminal state
+	fmt.Print("\033[?25h") // Show cursor
+	fmt.Print("\033[2J\033[H") // Clear screen
+}
+
+func (g *Game) ShowError(message string) {
+	g.state = StateError
+	g.taskDescription = message
+	g.screen.Sync()
 }
 
 // Add new helper function to wrap text
@@ -306,34 +291,20 @@ func (g *Game) draw() {
 	style := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorWhite)
 
 	switch g.state {
-	case StateLanguageSelect:
-		drawText(g.screen, 1, 1, style.Bold(true), "DevTyper - Select Programming Language")
+	case StateMode:
+		drawText(g.screen, 1, 1, style.Bold(true), "DevTyper - Choose Mode")
 		drawText(g.screen, 1, 3, style, "Use Up/Down arrows to select, Enter to confirm:")
 
-		for i, lang := range g.languages {
-			langStyle := style
-			if i == g.selectedLanguage {
-				langStyle = langStyle.Background(tcell.ColorBlue)
+		for i, mode := range g.modeOptions {
+			modeStyle := style
+			if i == g.selectedMode {
+				modeStyle = modeStyle.Background(tcell.ColorBlue)
 			}
-			drawText(g.screen, 3, 5+i, langStyle, lang)
+			drawText(g.screen, 3, 5+i, modeStyle, mode)
 		}
-
-	case StateWordCountSelect:
-		drawText(g.screen, 1, 1, style.Bold(true), "DevTyper - Select Word Count")
-		drawText(g.screen, 1, 3, style, "Use Up/Down arrows to select, Enter to confirm:")
-
-		for i, count := range g.wordCountOptions {
-			countStyle := style
-			if i == g.selectedCount {
-				countStyle = countStyle.Background(tcell.ColorBlue)
-			}
-			drawText(g.screen, 3, 5+i, countStyle, fmt.Sprintf("%d words", count))
-		}
-		drawText(g.screen, 1, 6+len(g.wordCountOptions), style, "Press ESC to go back")
 
 	case StatePlaying:
-		drawText(g.screen, 1, 1, style.Bold(true),
-			fmt.Sprintf("DevTyper - %s Practice", strings.ToUpper(g.languages[g.selectedLanguage])))
+		drawText(g.screen, 1, 1, style.Bold(true), "DevTyper - Typing Practice")
 
 		// Get screen width for text wrapping
 		width, _ := g.screen.Size()
@@ -392,12 +363,30 @@ func (g *Game) draw() {
 		drawText(g.screen, 1, 3, style, fmt.Sprintf("Words per minute: %.1f", g.stats.calculateWPM()))
 		drawText(g.screen, 1, 4, style, fmt.Sprintf("Accuracy: %.1f%%", g.stats.calculateAccuracy()))
 		drawText(g.screen, 1, 5, style, fmt.Sprintf("Total words typed: %d", g.stats.wordsTyped))
-		drawText(g.screen, 1, 7, style, "Press Enter/ESC to return to language selection")
+		drawText(g.screen, 1, 7, style, "Press Enter/ESC to exit")
 
 	case StateTaskComplete:
+		width, _ := g.screen.Size()
+		task := g.task.GetOutput() // Get final output
+		lines := wrapText(task, width-2) // Wrap task output
+
 		drawText(g.screen, 1, 1, style.Bold(true), "Task Completed!")
 		drawText(g.screen, 1, 3, style, g.taskDescription+" has finished")
-		drawText(g.screen, 1, 5, style, "Press ESC to exit")
+		
+		// Display final task output
+		outputY := 5
+		maxLines := 8 // Show last 8 lines
+		start := len(lines)
+		if start > maxLines {
+			start = len(lines) - maxLines
+		}
+		for i, line := range lines[start:] {
+			drawText(g.screen, 1, outputY+i, style.Foreground(tcell.ColorYellow), line)
+		}
+		
+		drawText(g.screen, 1, outputY+maxLines+2, style, "Press ESC to exit")
+
+		// Handle ESC immediately
 		ev := g.screen.PollEvent()
 		if ev, ok := ev.(*tcell.EventKey); ok {
 			if ev.Key() == tcell.KeyEscape {
@@ -450,7 +439,6 @@ func PrintResults(results Results) {
 	fmt.Println(border)
 	fmt.Println("🎯 DevTyper Results")
 	fmt.Println(border)
-	fmt.Printf("Language: %s\n", results.Language)
 	fmt.Printf("Duration: %d seconds\n", results.Duration)
 	fmt.Printf("Words per minute: %.1f\n", results.WPM)
 	fmt.Printf("Accuracy: %.1f%%\n", results.Accuracy)
