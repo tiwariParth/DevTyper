@@ -13,6 +13,7 @@ type GameState int
 
 const (
 	StateMode GameState = iota
+	StateWordCountSelect
 	StatePlaying
 	StateResults
 	StateTaskComplete
@@ -134,6 +135,8 @@ gameLoop:
 			switch g.state {
 			case StateMode:
 				g.handleModeSelect()
+			case StateWordCountSelect:
+				g.handleWordCountSelect()
 			case StatePlaying:
 				g.handleInput()
 			case StateResults:
@@ -187,12 +190,30 @@ func (g *Game) handleModeSelect() {
 			g.selectedMode = (g.selectedMode + 1) % len(g.modeOptions)
 		case tcell.KeyEnter:
 			if g.selectedMode == 0 {
-				g.state = StatePlaying
-				g.currentSentence = g.sentenceGen.Generate()
-				g.updateCurrentChars()
+				g.state = StateWordCountSelect
 			} else {
 				g.isRunning = false // Just wait for task
 			}
+		}
+	}
+}
+
+func (g *Game) handleWordCountSelect() {
+	ev := g.screen.PollEvent()
+	switch ev := ev.(type) {
+	case *tcell.EventKey:
+		switch ev.Key() {
+		case tcell.KeyEscape:
+			g.state = StateMode
+		case tcell.KeyUp:
+			g.selectedCount = (g.selectedCount - 1 + len(g.wordCountOptions)) % len(g.wordCountOptions)
+		case tcell.KeyDown:
+			g.selectedCount = (g.selectedCount + 1) % len(g.wordCountOptions)
+		case tcell.KeyEnter:
+			g.sentenceGen.SetWordCount(g.wordCountOptions[g.selectedCount])
+			g.currentSentence = g.sentenceGen.Generate()
+			g.updateCurrentChars()
+			g.state = StatePlaying
 		}
 	}
 }
@@ -313,6 +334,18 @@ func (g *Game) draw() {
 				modeStyle = modeStyle.Background(tcell.ColorBlue)
 			}
 			drawText(g.screen, 3, 5+i, modeStyle, mode)
+		}
+
+	case StateWordCountSelect:
+		drawText(g.screen, 1, 1, style.Bold(true), "DevTyper - Select Word Count")
+		drawText(g.screen, 1, 3, style, "Use Up/Down arrows to select, Enter to confirm:")
+
+		for i, count := range g.wordCountOptions {
+			countStyle := style
+			if i == g.selectedCount {
+				countStyle = countStyle.Background(tcell.ColorBlue)
+			}
+			drawText(g.screen, 3, 5+i, countStyle, fmt.Sprintf("%d words", count))
 		}
 
 	case StatePlaying:
