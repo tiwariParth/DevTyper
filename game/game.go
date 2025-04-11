@@ -80,6 +80,10 @@ type Game struct {
 	task             *monitor.Task
 	modeOptions      []string
 	selectedMode     int
+	cursorX          int
+	cursorY          int
+	lastOutput       []string
+	outputStartRow   int
 }
 
 func New(taskDone chan bool, description string, task *monitor.Task) (*Game, error) {
@@ -110,6 +114,10 @@ func New(taskDone chan bool, description string, task *monitor.Task) (*Game, err
 		task:             task,
 		modeOptions:      []string{"Practice Typing", "Wait for Task"},
 		selectedMode:     0,
+		cursorX:           7,
+		cursorY:           3,
+		lastOutput:       []string{},
+		outputStartRow:   0,
 	}
 	return game, nil
 }
@@ -118,6 +126,23 @@ func (g *Game) updateCurrentChars() {
 	g.currentChars = make([]CharacterState, len(g.currentSentence))
 	for i, c := range g.currentSentence {
 		g.currentChars[i] = CharacterState{char: c, correct: false, typed: false}
+	}
+}
+
+func (g *Game) updateCommandOutput() {
+	if g.task == nil {
+		return
+	}
+
+	output := g.task.GetOutput()
+	lines := strings.Split(output, "\n")
+
+	// Store the last few lines
+	maxLines := 5
+	if len(lines) > maxLines {
+		g.lastOutput = lines[len(lines)-maxLines:]
+	} else {
+		g.lastOutput = lines
 	}
 }
 
@@ -322,6 +347,14 @@ func wrapText(text string, width int) []string {
 func (g *Game) draw() {
 	g.screen.Clear()
 	style := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorWhite)
+	width, height := g.screen.Size()
+
+	// Update command output before drawing
+	g.updateCommandOutput()
+
+	// Calculate layout
+	commandOutputHeight := len(g.lastOutput) + 2 // +2 for border and title
+	availableHeight := height - commandOutputHeight - 1 // -1 for bottom status line
 
 	switch g.state {
 	case StateMode:
@@ -349,33 +382,42 @@ func (g *Game) draw() {
 		}
 
 	case StatePlaying:
-		drawText(g.screen, 1, 1, style.Bold(true), "DevTyper - Typing Practice")
+		// Draw header with border
+		drawBorder(g.screen, 0, 0, width-1, 2, style)
+		drawText(g.screen, 2, 1, style.Bold(true), "DevTyper - Typing Practice")
 
-		// Get screen width for text wrapping
-		width, _ := g.screen.Size()
-		maxWidth := width - 8 // Account for left margin and "Type: " prefix
-		
-		// Wrap the sentence and user input
+		// Calculate how much space we have for text area
+		textAreaHeight := availableHeight - 8 // Reserve space for stats box
+
+		// Draw text area with border
+		drawBorder(g.screen, 0, 2, width-1, textAreaHeight+2, style)
+
+		// Draw sentence with wrapping and cursor
+		maxWidth := width - 8
 		wrappedSentence := wrapText(g.currentSentence, maxWidth)
-		wrappedInput := wrapText(g.userInput, maxWidth)
+		currentPos := len(g.userInput)
 
-		// Draw sentence with wrapping
-		drawText(g.screen, 1, 3, style, "Type:")
+		drawText(g.screen, 2, 3, style, "Type:")
+
 		for i, line := range wrappedSentence {
 			x := 7
 			lineStart := 0
 			if i > 0 {
-				// Calculate how many characters we've already displayed
 				for _, prevLine := range wrappedSentence[:i] {
 					lineStart += len(prevLine)
 				}
 			}
-			
+
 			// Draw each character in the line
 			for j, char := range line {
 				pos := lineStart + j
 				charStyle := style
-				if pos < len(g.currentChars) {
+
+				if pos == currentPos {
+					g.cursorX = x + j
+					g.cursorY = 3 + i
+					charStyle = charStyle.Background(tcell.ColorWhite).Foreground(tcell.ColorBlack)
+				} else if pos < len(g.currentChars) {
 					cs := g.currentChars[pos]
 					if cs.typed {
 						if cs.correct {
@@ -387,21 +429,25 @@ func (g *Game) draw() {
 				}
 				drawText(g.screen, x+j, 3+i, charStyle, string(char))
 			}
+
+			// Show cursor at end of input if needed
+			if currentPos == len(g.currentSentence) && i == len(wrappedSentence)-1 {
+				g.cursorX = x + len(line)
+				g.cursorY = 3 + i
+			}
 		}
 
-		// Draw user input with wrapping
-		inputY := 4 + len(wrappedSentence)
-		drawText(g.screen, 1, inputY, style, "Your input:")
-		for i, line := range wrappedInput {
-			drawText(g.screen, 7, inputY+i, style, line)
-		}
+		// Draw stats box
+		statsY := textAreaHeight + 4
+		drawBorder(g.screen, 0, statsY-1, width-1, statsY+3, style)
+		drawText(g.screen, 2, statsY, style, fmt.Sprintf("WPM: %.1f | Accuracy: %.1f%% | Words: %d",
+			g.stats.calculateWPM(),
+			g.stats.calculateAccuracy(),
+			g.stats.wordsTyped))
+		drawText(g.screen, 2, statsY+2, style, "Press ESC to exit")
 
-		// Adjust stats position based on wrapped text
-		statsY := inputY + len(wrappedInput) + 2
-		drawText(g.screen, 1, statsY, style, fmt.Sprintf("WPM: %.1f", g.stats.calculateWPM()))
-		drawText(g.screen, 1, statsY+1, style, fmt.Sprintf("Accuracy: %.1f%%", g.stats.calculateAccuracy()))
-		drawText(g.screen, 1, statsY+2, style, fmt.Sprintf("Words typed: %d", g.stats.wordsTyped))
-		drawText(g.screen, 1, statsY+4, style, "Press ESC to exit")
+		// Set the starting row for command output
+		g.outputStartRow = statsY + 5
 
 	case StateResults:
 		drawText(g.screen, 1, 1, style.Bold(true), "Time's Up! - Final Results")
@@ -417,7 +463,7 @@ func (g *Game) draw() {
 
 		drawText(g.screen, 1, 1, style.Bold(true), "Task Completed!")
 		drawText(g.screen, 1, 3, style, g.taskDescription+" has finished")
-		
+
 		// Display final task output
 		outputY := 5
 		maxLines := 8 // Show last 8 lines
@@ -428,7 +474,7 @@ func (g *Game) draw() {
 		for i, line := range lines[start:] {
 			drawText(g.screen, 1, outputY+i, style.Foreground(tcell.ColorYellow), line)
 		}
-		
+
 		drawText(g.screen, 1, outputY+maxLines+2, style, "Press ESC to exit")
 
 		// Handle ESC immediately
@@ -455,22 +501,54 @@ func (g *Game) draw() {
 		}
 	}
 
-	if g.taskDescription != "" {
-		statusStyle := style.Bold(true)
-		_, height := g.screen.Size()
-		drawText(g.screen, 1, height-1, statusStyle, "Background: "+g.taskDescription)
-	}
+	// Draw command output in dedicated area at the bottom with border
+	if len(g.lastOutput) > 0 && g.state != StateTaskComplete {
+		outputY := height - commandOutputHeight
+		g.outputStartRow = outputY
 
-	if g.task != nil {
-		_, height := g.screen.Size()
-		outputY := height - 10
-		lines := strings.Split(g.task.GetOutput(), "\n")
-		for i, line := range lines[max(0, len(lines)-8):] {
-			drawText(g.screen, 1, outputY+i, style.Foreground(tcell.ColorYellow), line)
+		// Draw output box
+		drawBorder(g.screen, 0, outputY, width-1, height-2, style)
+		drawText(g.screen, 2, outputY, style.Bold(true), "Command Output:")
+
+		// Draw command output
+		for i, line := range g.lastOutput {
+			if len(line) > width-4 {
+				line = line[:width-7] + "..."
+			}
+			drawText(g.screen, 2, outputY+1+i, style.Foreground(tcell.ColorYellow), line)
 		}
 	}
 
+	// Draw status line at bottom
+	if g.taskDescription != "" {
+		statusStyle := style.Bold(true)
+		drawText(g.screen, 1, height-1, statusStyle, "Task: "+g.taskDescription)
+	}
+
+	// Show cursor
+	g.screen.ShowCursor(g.cursorX, g.cursorY)
 	g.screen.Show()
+}
+
+// Add helper function for drawing borders
+func drawBorder(s tcell.Screen, x1, y1, x2, y2 int, style tcell.Style) {
+	// Draw corners
+	s.SetContent(x1, y1, '┌', nil, style)
+	s.SetContent(x2, y1, '┐', nil, style)
+	s.SetContent(x1, y2, '└', nil, style)
+	s.SetContent(x2, y2, '┘', nil, style)
+
+	// Draw horizontal lines
+	for x := x1 + 1; x < x2; x++ {
+		s.SetContent(x, y1, '─', nil, style)
+		s.SetContent(x, y2, '─', nil, style)
+	}
+
+	// Draw vertical lines
+	for y := y1 + 1; y < y2; y++ {
+		s.SetContent(x1, y, '│', nil, style)
+		s.SetContent(x2, y, '│', nil, style)
+	}
 }
 
 func drawText(s tcell.Screen, x, y int, style tcell.Style, text string) {

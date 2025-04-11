@@ -54,9 +54,9 @@ func (t *Task) Start() error {
 		return err
 	}
 
-	// Handle output in background
+	// Handle output in background with better buffer management
 	go func() {
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, 1024) // Smaller buffer for more frequent updates
 		for {
 			n, err := t.pty.Read(buf)
 			if err != nil {
@@ -65,16 +65,24 @@ func (t *Task) Start() error {
 				}
 				break
 			}
+
 			output := string(buf[:n])
 			t.outputMu.Lock()
+			// Limit buffer size to prevent memory issues
+			if t.Output.Len() > 100*1024 {
+				// Clear half the buffer if it gets too large
+				oldContent := t.Output.String()
+				t.Output.Reset()
+				t.Output.WriteString(oldContent[len(oldContent)/2:])
+			}
 			t.Output.WriteString(output)
 			t.outputMu.Unlock()
 
-			// Send to output channel
+			// Send to output channel with non-blocking write
 			select {
 			case t.output <- output:
 			default:
-				// Channel full, skip
+				// Skip if channel is full
 			}
 		}
 	}()
