@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"github.com/gdamore/tcell/v2"
 	"strings"
 	"time"
+
+	"github.com/gdamore/tcell/v2"
 )
 
 type Game struct {
