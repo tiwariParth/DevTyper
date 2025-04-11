@@ -39,6 +39,8 @@ type Game struct {
 	timerActive      bool
 	lastTick         time.Time
 	currentChars     []CharacterState
+	timerDone        chan bool
+	results          *GameResults
 }
 
 func NewGame() (*Game, error) {
@@ -68,6 +70,8 @@ func NewGame() (*Game, error) {
 		timerActive:      false,
 		lastTick:         time.Now(),
 		currentChars:     make([]CharacterState, 0),
+		timerDone:        make(chan bool),
+		results:          &GameResults{},
 	}
 	game.updateCurrentChars()
 
@@ -81,22 +85,65 @@ func (g *Game) updateCurrentChars() {
 	}
 }
 
+func (g *Game) startTimer() {
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		endTime := time.Now().Add(time.Duration(g.timeOptions[g.selectedTime]) * time.Second)
+
+		for {
+			select {
+			case <-ticker.C:
+				remaining := time.Until(endTime).Seconds()
+				g.timeRemaining = int(remaining)
+
+				if remaining <= 0 {
+					g.timerActive = false
+					g.saveResults()
+					g.timerDone <- true
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (g *Game) saveResults() {
+	g.results = &GameResults{
+		Language:    g.languages[g.selectedLanguage],
+		Duration:    g.timeOptions[g.selectedTime],
+		WPM:         g.stats.calculateWPM(),
+		Accuracy:    g.stats.calculateAccuracy(),
+		WordsTyped:  g.stats.wordsTyped,
+		TotalErrors: g.stats.errorStrokes,
+	}
+}
+
 func (g *Game) Run() {
+gameLoop:
 	for g.isRunning {
-		if g.timerActive {
-			g.updateTimer()
+		select {
+		case <-g.timerDone:
+			break gameLoop
+		default:
+			switch g.state {
+			case StateLanguageSelect:
+				g.handleLanguageSelect()
+			case StateTimeSelect:
+				g.handleTimeSelect()
+			case StatePlaying:
+				g.handleInput()
+			case StateResults:
+				g.handleResults()
+			}
+			g.draw()
 		}
-		switch g.state {
-		case StateLanguageSelect:
-			g.handleLanguageSelect()
-		case StateTimeSelect:
-			g.handleTimeSelect()
-		case StatePlaying:
-			g.handleInput()
-		case StateResults:
-			g.handleResults()
-		}
-		g.draw()
+	}
+
+	g.screen.Fini()
+	if g.results != nil {
+		PrintResults(*g.results)
 	}
 }
 
@@ -131,22 +178,10 @@ func (g *Game) handleTimeSelect() {
 		case tcell.KeyEnter:
 			g.timeRemaining = g.timeOptions[g.selectedTime]
 			g.timerActive = true
-			g.lastTick = time.Now()
+			g.startTimer()
 			g.stats = NewStats() // Reset stats
 			g.state = StatePlaying
 		}
-	}
-}
-
-func (g *Game) updateTimer() {
-	now := time.Now()
-	elapsed := now.Sub(g.lastTick).Seconds()
-	g.lastTick = now
-
-	g.timeRemaining -= int(elapsed)
-	if g.timeRemaining <= 0 {
-		g.timerActive = false
-		g.state = StateResults
 	}
 }
 
@@ -156,6 +191,7 @@ func (g *Game) handleInput() {
 	case *tcell.EventKey:
 		switch ev.Key() {
 		case tcell.KeyEscape:
+			g.saveResults()
 			g.isRunning = false
 		case tcell.KeyRune:
 			if len(g.userInput) < len(g.currentSentence) {
