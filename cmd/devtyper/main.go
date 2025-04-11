@@ -5,8 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
-	"time"
+	"syscall"
 
 	"github.com/parth/DevTyper/game"
 	"github.com/parth/DevTyper/monitor"
@@ -14,11 +15,12 @@ import (
 
 func main() {
 	forceExit := flag.Bool("force-exit", false, "Exit game immediately when task completes")
+	keepAlive := flag.Bool("keep-alive", true, "Keep command running after exiting game")
 	flag.Parse()
 
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Println("Usage: devtyper [-force-exit] <command>")
+		fmt.Println("Usage: devtyper [-force-exit] [-keep-alive] <command>")
 		os.Exit(1)
 	}
 
@@ -35,6 +37,10 @@ func main() {
 	response, _ := reader.ReadString('\n')
 	response = strings.TrimSpace(response)
 
+	// Setup signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	// Start task after user input
 	if err := task.Start(); err != nil {
 		fmt.Printf("Error starting task: %v\n", err)
@@ -50,15 +56,40 @@ func main() {
 			task.Stop() // Stop task if game fails
 			os.Exit(1)
 		}
+
+		// Handle Ctrl+C while game is running
+		go func() {
+			<-sigChan
+			g.Cleanup()
+			task.Stop()
+			os.Exit(0)
+		}()
+
 		g.ForceExit = *forceExit
 		g.Run()
-	}
 
-	// Wait for task completion
-	select {
-	case <-task.Done:
-		fmt.Println("Task completed!")
-	case <-time.After(time.Second * 1): // Add timeout for cleanup
-		task.Stop()
+		// After game exits, check if we should wait for task
+		if *keepAlive {
+			fmt.Println("\nGame exited. Waiting for command to complete...")
+			fmt.Println("Press Ctrl+C to force quit")
+			select {
+			case <-task.Done:
+				fmt.Println("Command completed!")
+			case <-sigChan:
+				fmt.Println("\nForce quitting...")
+				task.Stop()
+			}
+		} else {
+			task.Stop()
+		}
+	} else {
+		// Wait for task if not playing
+		select {
+		case <-task.Done:
+			fmt.Println("Command completed!")
+		case <-sigChan:
+			fmt.Println("\nForce quitting...")
+			task.Stop()
+		}
 	}
 }
