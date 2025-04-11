@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/parth/DevTyper/monitor" 
 )
 
 type GameState int
@@ -82,9 +83,10 @@ type Game struct {
 	taskDone         chan bool
 	ForceExit        bool
 	taskDescription  string
+	task             *monitor.Task
 }
 
-func New(taskDone chan bool, description string) (*Game, error) {
+func New(taskDone chan bool, description string, task *monitor.Task) (*Game, error) {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return nil, err
@@ -116,6 +118,7 @@ func New(taskDone chan bool, description string) (*Game, error) {
 		taskDone:         taskDone,
 		ForceExit:        false,
 		taskDescription:  description,
+		task:             task,
 	}
 	game.updateCurrentChars()
 
@@ -377,6 +380,17 @@ func (g *Game) draw() {
 		_, height := g.screen.Size()
 		drawText(g.screen, 1, height-1, statusStyle, "Background: "+g.taskDescription)
 	}
+
+	// Show task output in bottom half of screen
+	if g.task != nil {
+		_, height := g.screen.Size()
+		outputY := height - 10 // Reserve bottom 10 lines for output
+		lines := strings.Split(g.task.GetOutput(), "\n")
+		for i, line := range lines[max(0, len(lines)-8):] { // Show last 8 lines
+			drawText(g.screen, 1, outputY+i, style.Foreground(tcell.ColorYellow), line)
+		}
+	}
+
 	g.screen.Show()
 }
 
@@ -398,4 +412,11 @@ func PrintResults(results Results) {
 	fmt.Printf("Total words typed: %d\n", results.WordsTyped)
 	fmt.Printf("Total errors: %d\n", results.TotalErrors)
 	fmt.Println(border)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

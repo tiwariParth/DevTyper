@@ -1,9 +1,10 @@
 package monitor
 
 import (
-	"os"
+	"bufio"
+	"bytes"
+	"io"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 )
@@ -21,29 +22,12 @@ type Task struct {
 	StartTime time.Time
 	State     TaskState
 	Done      chan bool
-	waitGroup sync.WaitGroup
+	Output    bytes.Buffer
+	outputMu  sync.Mutex
 }
 
 func NewTask(command string, args ...string) *Task {
-	// Create command with proper shell interpretation
-	var cmd *exec.Cmd
-	if strings.Contains(command, " ") || len(args) > 0 {
-		// Use shell for complex commands
-		shellCmd := append([]string{command}, args...)
-		cmd = exec.Command("sh", "-c", strings.Join(shellCmd, " "))
-	} else {
-		// Simple command
-		cmd = exec.Command(command, args...)
-	}
-
-	// Inherit parent's environment
-	cmd.Env = os.Environ()
-
-	// Setup stdio
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-
+	cmd := exec.Command(command, args...)
 	return &Task{
 		Cmd:       cmd,
 		StartTime: time.Now(),
@@ -53,25 +37,27 @@ func NewTask(command string, args ...string) *Task {
 }
 
 func (t *Task) Start() error {
-	// Prepare command but don't start yet
-	if strings.Contains(t.Cmd.Path, " ") {
-		shellCmd := []string{"-c", t.Cmd.Path + " " + strings.Join(t.Cmd.Args[1:], " ")}
-		t.Cmd = exec.Command("sh", shellCmd...)
+	// Create pipes for output
+	stdout, err := t.Cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := t.Cmd.StderrPipe()
+	if err != nil {
+		return err
 	}
 
-	// Setup pipes
-	t.Cmd.Stdout = os.Stdout
-	t.Cmd.Stderr = os.Stderr
-	t.Cmd.Stdin = os.Stdin
-
-	// Start command after proper setup
+	// Start command
 	if err := t.Cmd.Start(); err != nil {
 		return err
 	}
 
-	t.waitGroup.Add(1)
+	// Handle output in background
+	go t.handleOutput(stdout)
+	go t.handleOutput(stderr)
+
+	// Wait for completion
 	go func() {
-		defer t.waitGroup.Done()
 		t.Cmd.Wait()
 		if t.Cmd.ProcessState.Success() {
 			t.State = TaskCompleted
@@ -84,9 +70,23 @@ func (t *Task) Start() error {
 	return nil
 }
 
+func (t *Task) handleOutput(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		t.outputMu.Lock()
+		t.Output.WriteString(scanner.Text() + "\n")
+		t.outputMu.Unlock()
+	}
+}
+
+func (t *Task) GetOutput() string {
+	t.outputMu.Lock()
+	defer t.outputMu.Unlock()
+	return t.Output.String()
+}
+
 func (t *Task) Stop() {
 	if t.Cmd != nil && t.Cmd.Process != nil {
 		t.Cmd.Process.Kill()
 	}
-	t.waitGroup.Wait()
 }

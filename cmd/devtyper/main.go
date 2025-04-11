@@ -44,7 +44,7 @@ func main() {
 	fmt.Printf("Starting long-running task: %s\n", description)
 
 	if strings.ToLower(response) != "n" {
-		g, err := game.New(task.Done, description)
+		g, err := game.New(task.Done, description, task)
 		if err != nil {
 			fmt.Printf("Error starting game: %v\n", err)
 			task.Stop() // Stop task if game fails
