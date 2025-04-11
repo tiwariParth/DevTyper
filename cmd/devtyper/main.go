@@ -26,30 +26,19 @@ func main() {
 
 	// Join all args to detect command type
 	cmdString := strings.Join(args, " ")
-	_, description, isInteractive := monitor.DetectCommand(cmdString)
+	_, description, isInteractive, argExample := monitor.DetectCommand(cmdString)
+
+	if isInteractive {
+		fmt.Println("\nThis command requires interactive input.")
+		fmt.Println("To skip interactive mode, try using arguments instead:")
+		fmt.Printf("\n  %s\n\n", argExample)
+		fmt.Println("Exiting. Please retry with arguments.")
+		os.Exit(0)
+	}
 
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	if isInteractive {
-		fmt.Println("This command requires user input. Please provide the required information:")
-		task := monitor.NewTask(args[0], args[1:]...)
-		if err := task.Start(); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Wait for command to complete without game
-		select {
-		case <-task.Done:
-			fmt.Println("\nCommand completed!")
-		case <-sigChan:
-			fmt.Println("\nForce quitting...")
-			task.Stop()
-		}
-		return
-	}
 
 	// Create task but don't start yet
 	task := monitor.NewTask(args[0], args[1:]...)
