@@ -175,6 +175,11 @@ gameLoop:
 				break gameLoop
 			}
 			g.showTaskComplete()
+			// Add timeout for task completion
+			go func() {
+				time.Sleep(time.Second * 3)
+				g.isRunning = false
+			}()
 		default:
 			switch g.state {
 			case StateLanguageSelect:
@@ -190,6 +195,7 @@ gameLoop:
 		}
 	}
 
+	// Ensure clean exit
 	g.screen.Fini()
 	if g.results != nil {
 		PrintResults(*g.results)
@@ -247,6 +253,7 @@ func (g *Game) handleInput() {
 		case tcell.KeyEscape:
 			g.saveResults()
 			g.isRunning = false
+			return // Immediate return on ESC
 		case tcell.KeyRune:
 			if len(g.userInput) < len(g.currentSentence) {
 				g.userInput += string(ev.Rune())
