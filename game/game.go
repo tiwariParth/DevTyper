@@ -1,4 +1,4 @@
-package main
+package game
 
 import (
 	"fmt"
@@ -15,12 +15,50 @@ const (
 	StateTimeSelect
 	StatePlaying
 	StateResults
+	StateTaskComplete
 )
 
 type CharacterState struct {
 	char    rune
 	correct bool
 	typed   bool
+}
+
+type Stats struct {
+	startTime    time.Time
+	wordsTyped   int
+	totalStrokes int
+	errorStrokes int
+}
+
+func NewStats() *Stats {
+	return &Stats{
+		startTime: time.Now(),
+	}
+}
+
+func (s *Stats) calculateWPM() float64 {
+	elapsedMinutes := time.Since(s.startTime).Minutes()
+	if elapsedMinutes == 0 {
+		return 0
+	}
+	return float64(s.wordsTyped) / elapsedMinutes
+}
+
+func (s *Stats) calculateAccuracy() float64 {
+	if s.totalStrokes == 0 {
+		return 100
+	}
+	return float64(s.totalStrokes-s.errorStrokes) / float64(s.totalStrokes) * 100
+}
+
+type Results struct {
+	Language    string
+	Duration    int
+	WPM         float64
+	Accuracy    float64
+	WordsTyped  int
+	TotalErrors int
 }
 
 type Game struct {
@@ -40,10 +78,13 @@ type Game struct {
 	lastTick         time.Time
 	currentChars     []CharacterState
 	timerDone        chan bool
-	results          *GameResults
+	results          *Results
+	taskDone         chan bool
+	ForceExit        bool
+	taskDescription  string
 }
 
-func NewGame() (*Game, error) {
+func New(taskDone chan bool, description string) (*Game, error) {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return nil, err
@@ -71,7 +112,10 @@ func NewGame() (*Game, error) {
 		lastTick:         time.Now(),
 		currentChars:     make([]CharacterState, 0),
 		timerDone:        make(chan bool),
-		results:          &GameResults{},
+		results:          &Results{},
+		taskDone:         taskDone,
+		ForceExit:        false,
+		taskDescription:  description,
 	}
 	game.updateCurrentChars()
 
@@ -110,7 +154,7 @@ func (g *Game) startTimer() {
 }
 
 func (g *Game) saveResults() {
-	g.results = &GameResults{
+	g.results = &Results{
 		Language:    g.languages[g.selectedLanguage],
 		Duration:    g.timeOptions[g.selectedTime],
 		WPM:         g.stats.calculateWPM(),
@@ -126,6 +170,11 @@ gameLoop:
 		select {
 		case <-g.timerDone:
 			break gameLoop
+		case <-g.taskDone:
+			if g.ForceExit {
+				break gameLoop
+			}
+			g.showTaskComplete()
 		default:
 			switch g.state {
 			case StateLanguageSelect:
@@ -145,6 +194,11 @@ gameLoop:
 	if g.results != nil {
 		PrintResults(*g.results)
 	}
+}
+
+func (g *Game) showTaskComplete() {
+	g.screen.Beep()
+	g.state = StateTaskComplete
 }
 
 func (g *Game) handleLanguageSelect() {
@@ -303,8 +357,19 @@ func (g *Game) draw() {
 		drawText(g.screen, 1, 4, style, fmt.Sprintf("Accuracy: %.1f%%", g.stats.calculateAccuracy()))
 		drawText(g.screen, 1, 5, style, fmt.Sprintf("Total words typed: %d", g.stats.wordsTyped))
 		drawText(g.screen, 1, 7, style, "Press Enter/ESC to return to language selection")
+
+	case StateTaskComplete:
+		drawText(g.screen, 1, 1, style.Bold(true), "Task Completed!")
+		drawText(g.screen, 1, 3, style, g.taskDescription+" has finished")
+		drawText(g.screen, 1, 5, style, "Press ESC to exit or ENTER to continue typing")
 	}
 
+	// Add task status line at bottom
+	if g.taskDescription != "" {
+		statusStyle := style.Bold(true)
+		_, height := g.screen.Size()
+		drawText(g.screen, 1, height-1, statusStyle, "Background: "+g.taskDescription)
+	}
 	g.screen.Show()
 }
 
@@ -312,4 +377,18 @@ func drawText(s tcell.Screen, x, y int, style tcell.Style, text string) {
 	for i, r := range text {
 		s.SetContent(x+i, y, r, nil, style)
 	}
+}
+
+func PrintResults(results Results) {
+	border := strings.Repeat("=", 50)
+	fmt.Println(border)
+	fmt.Println("🎯 DevTyper Results")
+	fmt.Println(border)
+	fmt.Printf("Language: %s\n", results.Language)
+	fmt.Printf("Duration: %d seconds\n", results.Duration)
+	fmt.Printf("Words per minute: %.1f\n", results.WPM)
+	fmt.Printf("Accuracy: %.1f%%\n", results.Accuracy)
+	fmt.Printf("Total words typed: %d\n", results.WordsTyped)
+	fmt.Printf("Total errors: %d\n", results.TotalErrors)
+	fmt.Println(border)
 }
