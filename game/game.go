@@ -125,7 +125,8 @@ gameLoop:
 	for g.isRunning {
 		select {
 		case <-g.taskDone:
-			if g.ForceExit {
+			if g.ForceExit || g.task.IsComplete() {
+				g.showTaskComplete()
 				break gameLoop
 			}
 			g.showTaskComplete()
@@ -154,7 +155,18 @@ func (g *Game) showTaskComplete() {
 	g.screen.Beep()
 	g.state = StateTaskComplete
 	g.screen.Sync()
-	g.draw() // Force immediate draw
+
+	// Draw completion message
+	style := tcell.StyleDefault.Foreground(tcell.ColorWhite)
+	drawText(g.screen, 1, 1, style.Bold(true), "Task Completed!")
+	if g.task.HasError() {
+		drawText(g.screen, 1, 3, style.Foreground(tcell.ColorRed),
+			fmt.Sprintf("Error: %s", g.task.GetError()))
+	} else {
+		drawText(g.screen, 1, 3, style, "Task completed successfully!")
+	}
+	drawText(g.screen, 1, 5, style, "Press ESC to exit")
+	g.screen.Show()
 }
 
 func (g *Game) showError(errMsg string) {

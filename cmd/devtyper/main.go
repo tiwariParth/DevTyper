@@ -13,6 +13,32 @@ import (
 	"github.com/parth/DevTyper/monitor"
 )
 
+// Add TaskContext struct to hold shared channels
+type TaskContext struct {
+	doneChan chan struct{}
+	sigChan  chan os.Signal
+	task     *monitor.Task
+}
+
+// Handle task completion based on user preference
+func handleTask(ctx *TaskContext, keepAlive bool) {
+	select {
+	case <-ctx.task.Done:
+		<-ctx.doneChan // Wait for output to finish
+		if ctx.task.HasError() {
+			fmt.Printf("\nTask failed: %s\n", ctx.task.GetError())
+		} else {
+			fmt.Println("\nTask completed successfully!")
+		}
+		if !keepAlive {
+			ctx.task.Stop()
+		}
+	case <-ctx.sigChan:
+		fmt.Println("\nStopping task...")
+		ctx.task.Stop()
+	}
+}
+
 func main() {
 	forceExit := flag.Bool("force-exit", false, "Exit game immediately when task completes")
 	keepAlive := flag.Bool("keep-alive", true, "Keep command running after exiting game")
@@ -37,17 +63,18 @@ func main() {
 	}
 
 	// Setup signal handling
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Create task but don't start yet
-	task := monitor.NewTask(args[0], args[1:]...)
+	ctx := &TaskContext{
+		doneChan: make(chan struct{}),
+		sigChan:  make(chan os.Signal, 1),
+		task:     monitor.NewTask(args[0], args[1:]...),
+	}
+	signal.Notify(ctx.sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Handle signals for clean shutdown
 	go func() {
-		<-sigChan
+		<-ctx.sigChan
 		fmt.Print("\n") // New line after ^C
-		task.Stop()
+		ctx.task.Stop()
 		fmt.Print("\033[?25h") // Show cursor
 		os.Exit(0)
 	}()
@@ -58,58 +85,53 @@ func main() {
 	response, _ := reader.ReadString('\n')
 	response = strings.TrimSpace(response)
 
+	// Start output display goroutine
+	go func() {
+		for output := range ctx.task.GetOutputChannel() {
+			fmt.Print(output)
+		}
+		ctx.doneChan <- struct{}{}
+	}()
+
 	// Start task after user input
-	if err := task.Start(); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		// Reset terminal state
-		fmt.Print("\033[?25h") // Show cursor
-		fmt.Print("\033[2J\033[H") // Clear screen
+	if err := ctx.task.Start(); err != nil {
+		fmt.Printf("\nError starting task: %v\n", err)
+		cleanup()
 		os.Exit(1)
 	}
 
-	// Setup error recovery
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Print("\033[?25h") // Show cursor
-			fmt.Print("\033[2J\033[H") // Clear screen
-			fmt.Printf("Error: %v\n", r)
-		}
-	}()
-
-	fmt.Printf("Starting long-running task: %s\n", description)
+	fmt.Printf("\nStarting task: %s\n", description)
 
 	if strings.ToLower(response) != "n" {
-		g, err := game.New(task.Done, description, task)
+		g, err := game.New(ctx.task.Done, description, ctx.task)
 		if err != nil {
-			fmt.Printf("Error starting game: %v\n", err)
-			task.Stop() // Stop task if game fails
+			fmt.Printf("\nError starting game: %v\n", err)
+			ctx.task.Stop()
+			cleanup()
 			os.Exit(1)
 		}
 
+		// Run game
 		g.ForceExit = *forceExit
 		g.Run()
 
-		if *keepAlive {
-			fmt.Println("\nGame exited. Command is still running...")
-			select {
-			case <-task.Done:
-				fmt.Println("\nCommand completed!")
-			case <-sigChan:
-				fmt.Println("\nStopping command...")
-				task.Stop()
-			}
-		} else {
-			task.Stop()
-			fmt.Println("\nCommand stopped.")
+		// Show status after game exits
+		if ctx.task.IsComplete() {
+			fmt.Println("\nTask completed while playing!")
+			<-ctx.doneChan // Wait for output to finish
+			cleanup()
+			os.Exit(0)
 		}
-	} else {
-		// Wait for task if not playing
-		select {
-		case <-task.Done:
-			fmt.Println("Command completed!")
-		case <-sigChan:
-			fmt.Println("\nForce quitting...")
-			task.Stop()
-		}
+
+		// Wait for task if it's still running
+		fmt.Println("\nTask is still running. Press Ctrl+C to stop.")
+		handleTask(ctx, *keepAlive)
 	}
+
+	cleanup()
+}
+
+func cleanup() {
+	fmt.Print("\033[?25h") // Show cursor
+	fmt.Print("\033[2J\033[H") // Clear screen
 }

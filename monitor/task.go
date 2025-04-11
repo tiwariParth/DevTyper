@@ -20,26 +20,30 @@ const (
 )
 
 type Task struct {
-	Cmd       *exec.Cmd
-	StartTime time.Time
-	State     TaskState
-	Done      chan bool
-	Output    bytes.Buffer
-	outputMu  sync.Mutex
-	ErrorChan chan error
-	err       error
-	errMu     sync.Mutex
-	pty       *os.File
+	Cmd        *exec.Cmd
+	StartTime  time.Time
+	State      TaskState
+	Done       chan bool
+	Output     bytes.Buffer
+	outputMu   sync.Mutex
+	ErrorChan  chan error
+	err        error
+	errMu      sync.Mutex
+	pty        *os.File
+	isComplete bool
+	statusMu   sync.Mutex
+	output     chan string
 }
 
 func NewTask(command string, args ...string) *Task {
 	cmd := exec.Command(command, args...)
 	return &Task{
-		Cmd:       cmd,
-		StartTime: time.Now(),
-		State:     TaskRunning,
-		Done:      make(chan bool),
-		ErrorChan: make(chan error, 1),
+		Cmd:        cmd,
+		StartTime:  time.Now(),
+		State:      TaskRunning,
+		Done:       make(chan bool),
+		ErrorChan:  make(chan error, 1),
+		output:     make(chan string, 100),
 	}
 }
 
@@ -56,25 +60,39 @@ func (t *Task) Start() error {
 		for {
 			n, err := t.pty.Read(buf)
 			if err != nil {
+				if !t.isComplete {
+					t.setError(err)
+				}
 				break
 			}
+			output := string(buf[:n])
 			t.outputMu.Lock()
-			t.Output.Write(buf[:n])
+			t.Output.WriteString(output)
 			t.outputMu.Unlock()
+
+			// Send to output channel
+			select {
+			case t.output <- output:
+			default:
+				// Channel full, skip
+			}
 		}
 	}()
 
 	// Wait for completion
 	go func() {
 		err := t.Cmd.Wait()
+		t.statusMu.Lock()
+		t.isComplete = true
+		t.statusMu.Unlock()
+
 		if err != nil {
 			t.setError(err)
-			t.ErrorChan <- err
 			t.State = TaskFailed
 		} else {
 			t.State = TaskCompleted
 		}
-		t.pty.Close()
+		close(t.output)
 		t.Done <- true
 	}()
 
@@ -117,4 +135,14 @@ func (t *Task) HasError() bool {
 	t.errMu.Lock()
 	defer t.errMu.Unlock()
 	return t.err != nil
+}
+
+func (t *Task) IsComplete() bool {
+	t.statusMu.Lock()
+	defer t.statusMu.Unlock()
+	return t.isComplete
+}
+
+func (t *Task) GetOutputChannel() <-chan string {
+	return t.output
 }
