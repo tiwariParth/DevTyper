@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,31 +21,47 @@ const (
 )
 
 type Task struct {
-	Cmd        *exec.Cmd
-	StartTime  time.Time
-	State      TaskState
-	Done       chan bool
-	Output     bytes.Buffer
-	outputMu   sync.Mutex
-	ErrorChan  chan error
-	err        error
-	errMu      sync.Mutex
-	pty        *os.File
-	isComplete bool
-	statusMu   sync.Mutex
-	output     chan string
+	Cmd          *exec.Cmd
+	StartTime    time.Time
+	State        TaskState
+	Done         chan bool
+	Output       bytes.Buffer
+	outputMu     sync.Mutex
+	ErrorChan    chan error
+	err          error
+	errMu        sync.Mutex
+	pty          *os.File
+	isComplete   bool
+	statusMu     sync.Mutex
+	output       chan string
+	outputBuffer []string     // Buffer of recent output lines
+	bufferMu     sync.Mutex   // Mutex for the buffer
+	bufferSize   int          // Number of lines to keep in buffer
 }
 
 func NewTask(command string, args ...string) *Task {
 	cmd := exec.Command(command, args...)
 	return &Task{
-		Cmd:        cmd,
-		StartTime:  time.Now(),
-		State:      TaskRunning,
-		Done:       make(chan bool),
-		ErrorChan:  make(chan error, 1),
-		output:     make(chan string, 100),
+		Cmd:          cmd,
+		StartTime:    time.Now(),
+		State:        TaskRunning,
+		Done:         make(chan bool),
+		ErrorChan:    make(chan error, 1),
+		output:       make(chan string, 100),
+		outputBuffer: make([]string, 0, 100),
+		bufferSize:   100,
 	}
+}
+
+// Add a function to get recent output lines
+func (t *Task) GetRecentOutput(maxLines int) []string {
+	t.bufferMu.Lock()
+	defer t.bufferMu.Unlock()
+
+	if len(t.outputBuffer) <= maxLines {
+		return append([]string{}, t.outputBuffer...)
+	}
+	return append([]string{}, t.outputBuffer[len(t.outputBuffer)-maxLines:]...)
 }
 
 func (t *Task) Start() error {
@@ -67,6 +84,8 @@ func (t *Task) Start() error {
 			}
 
 			output := string(buf[:n])
+			lines := strings.Split(output, "\n")
+
 			t.outputMu.Lock()
 			// Limit buffer size to prevent memory issues
 			if t.Output.Len() > 100*1024 {
@@ -77,6 +96,19 @@ func (t *Task) Start() error {
 			}
 			t.Output.WriteString(output)
 			t.outputMu.Unlock()
+
+			 // Add to buffer
+			t.bufferMu.Lock()
+			for _, line := range lines {
+				if line != "" {
+					t.outputBuffer = append(t.outputBuffer, line)
+					// Trim buffer if too large
+					if len(t.outputBuffer) > t.bufferSize {
+						t.outputBuffer = t.outputBuffer[1:]
+					}
+				}
+			}
+			t.bufferMu.Unlock()
 
 			// Send to output channel with non-blocking write
 			select {

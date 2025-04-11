@@ -134,16 +134,8 @@ func (g *Game) updateCommandOutput() {
 		return
 	}
 
-	output := g.task.GetOutput()
-	lines := strings.Split(output, "\n")
-
-	// Store the last few lines
-	maxLines := 5
-	if len(lines) > maxLines {
-		g.lastOutput = lines[len(lines)-maxLines:]
-	} else {
-		g.lastOutput = lines
-	}
+	// Get up to 5 recent lines from the task's buffer
+	g.lastOutput = g.task.GetRecentOutput(5)
 }
 
 func (g *Game) Run() {
@@ -352,8 +344,13 @@ func (g *Game) draw() {
 	// Update command output before drawing
 	g.updateCommandOutput()
 
+	// Calculate layout more carefully
+	commandOutputHeight := min(len(g.lastOutput)+2, 7) // +2 for border and title, max 7 lines total
+
+	// Clear screen before drawing
+	g.screen.Fill(' ', style)
+
 	// Calculate layout
-	commandOutputHeight := len(g.lastOutput) + 2 // +2 for border and title
 	availableHeight := height - commandOutputHeight - 1 // -1 for bottom status line
 
 	switch g.state {
@@ -502,28 +499,33 @@ func (g *Game) draw() {
 	}
 
 	// Draw command output in dedicated area at the bottom with border
+	outputY := height - commandOutputHeight - 1 // -1 for status line
+
 	if len(g.lastOutput) > 0 && g.state != StateTaskComplete {
-		outputY := height - commandOutputHeight
 		g.outputStartRow = outputY
 
 		// Draw output box
+		outputStyle := style.Foreground(tcell.ColorYellow).Background(tcell.ColorReset)
 		drawBorder(g.screen, 0, outputY, width-1, height-2, style)
-		drawText(g.screen, 2, outputY, style.Bold(true), "Command Output:")
+		drawText(g.screen, 2, outputY, style.Bold(true), "Command Output")
 
-		// Draw command output
+		// Draw command output with better formatting
 		for i, line := range g.lastOutput {
-			if len(line) > width-4 {
-				line = line[:width-7] + "..."
+			if i >= 5 { // Show max 5 lines
+				break
 			}
-			drawText(g.screen, 2, outputY+1+i, style.Foreground(tcell.ColorYellow), line)
+			// Trim line if needed
+			if len(line) > width-6 {
+				line = line[:width-9] + "..."
+			}
+			drawText(g.screen, 2, outputY+i+1, outputStyle, line)
 		}
 	}
 
-	// Draw status line at bottom
-	if g.taskDescription != "" {
-		statusStyle := style.Bold(true)
-		drawText(g.screen, 1, height-1, statusStyle, "Task: "+g.taskDescription)
-	}
+	// Draw a clear status line at the very bottom with border
+	statusY := height - 1
+	drawText(g.screen, 1, statusY, style.Bold(true),
+		fmt.Sprintf("Task: %s | Press ESC to exit", g.taskDescription))
 
 	// Show cursor
 	g.screen.ShowCursor(g.cursorX, g.cursorY)
@@ -572,6 +574,14 @@ func PrintResults(results Results) {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+// Helper for calculating minimum
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

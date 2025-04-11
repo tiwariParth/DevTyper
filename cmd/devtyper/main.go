@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/parth/DevTyper/game"
@@ -15,9 +16,11 @@ import (
 
 // Add TaskContext struct to hold shared channels
 type TaskContext struct {
-	doneChan chan struct{}
-	sigChan  chan os.Signal
-	task     *monitor.Task
+	doneChan   chan struct{}
+	sigChan    chan os.Signal
+	task       *monitor.Task
+	gameActive bool            // Flag to indicate when game is active
+	outputMu   sync.Mutex      // Mutex to protect output state
 }
 
 // Handle task completion based on user preference
@@ -64,9 +67,10 @@ func main() {
 
 	// Setup signal handling
 	ctx := &TaskContext{
-		doneChan: make(chan struct{}),
-		sigChan:  make(chan os.Signal, 1),
-		task:     monitor.NewTask(args[0], args[1:]...),
+		doneChan:   make(chan struct{}),
+		sigChan:    make(chan os.Signal, 1),
+		task:       monitor.NewTask(args[0], args[1:]...),
+		gameActive: false,
 	}
 	signal.Notify(ctx.sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -88,7 +92,11 @@ func main() {
 	// Start output display goroutine
 	go func() {
 		for output := range ctx.task.GetOutputChannel() {
-			fmt.Print(output)
+			ctx.outputMu.Lock()
+			if !ctx.gameActive {
+				fmt.Print(output) // Only print output when game is not active
+			}
+			ctx.outputMu.Unlock()
 		}
 		ctx.doneChan <- struct{}{}
 	}()
@@ -111,9 +119,19 @@ func main() {
 			os.Exit(1)
 		}
 
+		 // Set game active to prevent direct console output
+		ctx.outputMu.Lock()
+		ctx.gameActive = true
+		ctx.outputMu.Unlock()
+
 		// Run game
 		g.ForceExit = *forceExit
 		g.Run()
+
+		// Reset game active state to allow console output again
+		ctx.outputMu.Lock()
+		ctx.gameActive = false
+		ctx.outputMu.Unlock()
 
 		// Show status after game exits
 		if ctx.task.IsComplete() {
@@ -124,7 +142,7 @@ func main() {
 		}
 
 		// Wait for task if it's still running
-		fmt.Println("\nTask is still running. Press Ctrl+C to stop.")
+		fmt.Println("\nTask is still running. Showing live output:")
 		handleTask(ctx, *keepAlive)
 	}
 
