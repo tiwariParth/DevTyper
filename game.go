@@ -17,6 +17,12 @@ const (
 	StateResults
 )
 
+type CharacterState struct {
+	char    rune
+	correct bool
+	typed   bool
+}
+
 type Game struct {
 	screen           tcell.Screen
 	sentenceGen      *SentenceGenerator
@@ -32,6 +38,7 @@ type Game struct {
 	timeRemaining    int
 	timerActive      bool
 	lastTick         time.Time
+	currentChars     []CharacterState
 }
 
 func NewGame() (*Game, error) {
@@ -60,9 +67,18 @@ func NewGame() (*Game, error) {
 		timeRemaining:    0,
 		timerActive:      false,
 		lastTick:         time.Now(),
+		currentChars:     make([]CharacterState, 0),
 	}
+	game.updateCurrentChars()
 
 	return game, nil
+}
+
+func (g *Game) updateCurrentChars() {
+	g.currentChars = make([]CharacterState, len(g.currentSentence))
+	for i, c := range g.currentSentence {
+		g.currentChars[i] = CharacterState{char: c, correct: false, typed: false}
+	}
 }
 
 func (g *Game) Run() {
@@ -142,17 +158,24 @@ func (g *Game) handleInput() {
 		case tcell.KeyEscape:
 			g.isRunning = false
 		case tcell.KeyRune:
-			g.userInput += string(ev.Rune())
-			g.stats.totalStrokes++
-			if len(g.userInput) <= len(g.currentSentence) &&
-				g.userInput[len(g.userInput)-1] != g.currentSentence[len(g.userInput)-1] {
-				g.stats.errorStrokes++
+			if len(g.userInput) < len(g.currentSentence) {
+				g.userInput += string(ev.Rune())
+				g.stats.totalStrokes++
+				pos := len(g.userInput) - 1
+				g.currentChars[pos].typed = true
+				g.currentChars[pos].correct = g.userInput[pos] == g.currentSentence[pos]
+				if !g.currentChars[pos].correct {
+					g.stats.errorStrokes++
+				}
 			}
 		case tcell.KeyEnter:
 			g.checkWord()
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
 			if len(g.userInput) > 0 {
-				g.userInput = g.userInput[:len(g.userInput)-1]
+				pos := len(g.userInput) - 1
+				g.currentChars[pos].typed = false
+				g.currentChars[pos].correct = false
+				g.userInput = g.userInput[:pos]
 			}
 		}
 	}
@@ -163,6 +186,7 @@ func (g *Game) checkWord() {
 		g.stats.wordsTyped += len(strings.Fields(g.currentSentence))
 		g.currentSentence = g.sentenceGen.Generate()
 		g.userInput = ""
+		g.updateCurrentChars()
 	}
 }
 
@@ -213,23 +237,23 @@ func (g *Game) draw() {
 
 		drawText(g.screen, 1, 2, style, fmt.Sprintf("Time remaining: %d seconds", g.timeRemaining))
 
-		drawText(g.screen, 1, 3, style, "Type: "+g.currentSentence)
-
-		inputStyle := style
-		if len(g.userInput) > 0 {
-			targetLen := len(g.userInput)
-			if targetLen <= len(g.currentSentence) {
-				expected := g.currentSentence[:targetLen]
-				if g.userInput == expected {
-					inputStyle = inputStyle.Foreground(tcell.ColorGreen)
+		// Draw current sentence with character-by-character coloring
+		x := 7 // Starting after "Type: "
+		drawText(g.screen, 1, 3, style, "Type: ")
+		for i, cs := range g.currentChars {
+			charStyle := style
+			if cs.typed {
+				if cs.correct {
+					charStyle = charStyle.Foreground(tcell.ColorGreen)
 				} else {
-					inputStyle = inputStyle.Foreground(tcell.ColorRed)
+					charStyle = charStyle.Foreground(tcell.ColorRed)
 				}
-			} else {
-				inputStyle = inputStyle.Foreground(tcell.ColorRed)
 			}
+			drawText(g.screen, x+i, 3, charStyle, string(cs.char))
 		}
-		drawText(g.screen, 1, 4, inputStyle, "Your input: "+g.userInput)
+
+		// Draw user input
+		drawText(g.screen, 1, 4, style, "Your input: "+g.userInput)
 
 		drawText(g.screen, 1, 6, style, fmt.Sprintf("WPM: %.1f", g.stats.calculateWPM()))
 		drawText(g.screen, 1, 7, style, fmt.Sprintf("Accuracy: %.1f%%", g.stats.calculateAccuracy()))
